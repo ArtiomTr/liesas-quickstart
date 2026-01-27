@@ -1,10 +1,14 @@
-use std::path::PathBuf;
+use std::{error::Error, path::PathBuf, process::exit};
 
+use ariadne::Source;
 use clap::Args;
 use color_eyre::{Result, eyre::Context as _};
-use tokio::{fs::File, io::AsyncReadExt};
+use tokio::{fs::File, io::AsyncReadExt, process};
 
-use crate::config::NetworkConfig;
+use crate::{
+    codespan::{report_config_error, report_toml_error},
+    config::NetworkConfig,
+};
 
 #[derive(Debug, Clone, Args)]
 pub struct StartCommand {
@@ -23,10 +27,20 @@ impl StartCommand {
             .await
             .context("invalid network config")?;
 
-        let config: NetworkConfig =
-            toml::de::from_str(&buffer).context("invalid network config")?;
+        let config: NetworkConfig = match toml::de::from_str(&buffer) {
+            Ok(value) => value,
+            Err(err) => report_toml_error(
+                "Invalid network configuration".to_owned(),
+                self.config.clone(),
+                buffer,
+                err,
+            ),
+        };
 
-        let resolved = config.resolve()?;
+        let resolved = match config.resolve() {
+            Ok(value) => value,
+            Err(err) => report_config_error(self.config.clone(), buffer, err),
+        };
 
         Ok(())
     }

@@ -1,4 +1,5 @@
-use color_eyre::Result;
+use ariadne::{Label, ReportKind};
+use color_eyre::eyre::eyre;
 use color_eyre::{eyre::bail, owo_colors::colors::Default};
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
+use thiserror::Error;
 use toml::Spanned;
 
 use crate::client::ClientKind;
@@ -92,21 +94,82 @@ pub struct ResolvedNetworkConfig {
     nodes: HashMap<String, ResolvedNodeConfig>,
 }
 
+pub type Span = Range<usize>;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("count cannot equal to zero")]
+    InvalidCount(Span),
+
+    #[error("the name `{name}` is defined multiple times")]
+    DuplicateName {
+        name: String,
+        span: Span,
+        duplicate: Span,
+    },
+}
+
+impl ConfigError {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::InvalidCount(span) => span.clone(),
+            Self::DuplicateName { span, .. } => span.clone(),
+        }
+    }
+
+    pub fn report(&self, file: PathBuf) -> ariadne::Report<'_, (String, Range<usize>)> {
+        let file = file.display().to_string();
+        let mut builder = ariadne::Report::build(ReportKind::Error, (file.clone(), self.span()));
+
+        match self {
+            Self::InvalidCount(span) => {
+                builder = builder
+                    .with_message("Invalid node configuration")
+                    .with_label(
+                        Label::new((file.clone(), span.clone()))
+                            .with_message("cannot equal to zero"),
+                    );
+            }
+            Self::DuplicateName {
+                name,
+                span,
+                duplicate,
+            } => {
+                builder = builder
+                    .with_message(format!("the name `{name}` is defined multiple times"))
+                    .with_label(
+                        Label::new((file.clone(), duplicate.clone()))
+                            .with_message("previous definition here"),
+                    )
+                    .with_label(
+                        Label::new((file.clone(), span.clone())).with_message("redefined here"),
+                    )
+            }
+        }
+
+        builder.finish()
+    }
+}
+
 impl NetworkConfig {
-    pub fn resolve(&self) -> Result<ResolvedNetworkConfig> {
+    pub fn resolve(&self) -> Result<ResolvedNetworkConfig, ConfigError> {
         let mut resolved = HashMap::new();
         let mut by_prefix: HashMap<String, Vec<NodeConfig>> = HashMap::new();
 
         for node in self.node.iter() {
             if let Some(ref name) = node.name {
                 if *node.count.as_ref() == 0 {
-                    bail!("{:?} count cannot equal zero", node.count.span());
+                    return Err(ConfigError::InvalidCount(node.count.span()));
                 } else if *node.count.as_ref() == 1 {
                     if resolved
                         .insert(name.clone(), ResolvedNodeConfig {})
                         .is_some()
                     {
-                        bail!("node with name {name} appears twice in config");
+                        return Err(ConfigError::DuplicateName {
+                            name: name.get_ref().clone(),
+                            span: name.span(),
+                            duplicate: 0..0,
+                        });
                     };
                 } else {
                     by_prefix
