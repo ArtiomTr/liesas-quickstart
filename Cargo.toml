@@ -1,0 +1,16 @@
+[package]
+name = "liesas-quickstart"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bollard = { version = "0.20.0", features = ["buildkit", "chrono"] }
+clap = { version = "4.5.54", features = ["derive"] }
+color-eyre = "0.6.5"
+derive_more = { version = "2.1.1", features = ["display"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_spanned = "1.0.4"
+serde_with = "3.16.1"
+strum = { version = "0.27.2", features = ["derive"] }
+tokio = { version = "1.49.0", features = ["full"] }
+toml = "0.9.11"

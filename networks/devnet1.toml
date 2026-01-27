@@ -1,0 +1,9 @@
+name = "devnet1"
+
+[[node]]
+name = "ream"
+client = "ream"
+count = 0
+
+[[node]]
+client = { kind = "grandine", bin = "~/grandine" }
