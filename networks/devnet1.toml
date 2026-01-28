@@ -6,5 +6,5 @@ client = "ream"
 count = 2
 
 [[node]]
-name = "ream_2"
+name = "ream_1"
 client = { kind = "grandine", bin = "~/grandine" }

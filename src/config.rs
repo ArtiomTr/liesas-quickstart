@@ -8,7 +8,7 @@ use thiserror::Error;
 use toml::Spanned;
 
 use crate::client::ClientKind;
-use crate::validator::{PrivateKey, generate_keypair};
+use crate::validator::generate_keypair;
 
 pub type Span = Range<usize>;
 
@@ -27,7 +27,7 @@ impl NodeNameSource {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NodeNameDefinition {
     Singular(NodeNameSource),
     Prefix {
@@ -45,8 +45,8 @@ pub enum ConfigError {
     #[error("the name `{name}` is defined multiple times")]
     DuplicateName {
         name: String,
-        span: Span,
-        previous: NodeNameDefinition,
+        curr_def: NodeNameDefinition,
+        prev_def: NodeNameDefinition,
     },
 }
 
@@ -54,7 +54,10 @@ impl ConfigError {
     pub fn span(&self) -> Span {
         match self {
             Self::InvalidCount(span) => span.clone(),
-            Self::DuplicateName { span, .. } => span.clone(),
+            Self::DuplicateName { curr_def, .. } => match curr_def {
+                NodeNameDefinition::Singular(source) => source.span(),
+                NodeNameDefinition::Prefix { prefix_span, .. } => prefix_span.span(),
+            },
         }
     }
 
@@ -73,13 +76,13 @@ impl ConfigError {
             }
             Self::DuplicateName {
                 name,
-                span,
-                previous,
+                curr_def,
+                prev_def,
             } => {
                 builder =
                     builder.with_message(format!("the name `{name}` is defined multiple times"));
 
-                match previous {
+                match prev_def {
                     NodeNameDefinition::Singular(kind) => {
                         let (span, message) = match kind {
                             NodeNameSource::Name(span) => {
@@ -117,13 +120,51 @@ impl ConfigError {
                                 Label::new((file.clone(), count_span.clone()))
                                     .with_message("count defined here"),
                             )
-                            .with_note(format!("the generated name `{name}` comes from prefix `{prefix}_` and index {}", name.strip_prefix(&format!("{prefix}_")).unwrap_or("<unknown>")));
+                            .with_note(format!("the first generated name `{name}` comes from prefix `{prefix}_` and index {}", name.strip_prefix(&format!("{prefix}_")).unwrap_or("<unknown>")));
                     }
                 }
 
-                builder = builder.with_label(
-                    Label::new((file.clone(), span.clone())).with_message("redefined here"),
-                );
+                match curr_def {
+                    NodeNameDefinition::Singular(kind) => {
+                        let (span, message) = match kind {
+                            NodeNameSource::Name(span) => {
+                                (span.clone(), format!("second definition appears here"))
+                            }
+                            NodeNameSource::Kind(span) => (
+                                span.clone(),
+                                format!("second definition appears here, derived from client"),
+                            ),
+                        };
+
+                        builder = builder
+                            .with_label(Label::new((file.clone(), span)).with_message(message));
+                    }
+                    NodeNameDefinition::Prefix {
+                        prefix,
+                        prefix_span,
+                        count_span,
+                    } => {
+                        let (prefix_span, message) = match prefix_span {
+                            NodeNameSource::Name(span) => {
+                                (span.clone(), format!("prefix `{prefix}` defined here"))
+                            }
+                            NodeNameSource::Kind(span) => (
+                                span.clone(),
+                                format!("prefix `{prefix}` derived from client kind here"),
+                            ),
+                        };
+
+                        builder = builder
+                            .with_label(
+                                Label::new((file.clone(), prefix_span)).with_message(message),
+                            )
+                            .with_label(
+                                Label::new((file.clone(), count_span.clone()))
+                                    .with_message("count defined here"),
+                            )
+                            .with_note(format!("the redefinition name `{name}` comes from prefix `{prefix}_` and index {}", name.strip_prefix(&format!("{prefix}_")).unwrap_or("<unknown>")));
+                        }
+                }
             }
         }
 
@@ -208,6 +249,8 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone)]
 struct ResolvedNodeConfig {
+    def: NodeNameDefinition,
+
     validators: Vec<usize>,
 }
 
@@ -221,22 +264,17 @@ struct ResolvedValidatorConfig {
 pub struct ResolvedNetworkConfig {
     validators: Vec<ResolvedValidatorConfig>,
     nodes: HashMap<String, ResolvedNodeConfig>,
+    counters: HashMap<String, u64>,
 }
 
 const NUM_ACTIVE_EPOCHS: usize = 262144;
 
 impl ResolvedNetworkConfig {
     fn resolve(&mut self, node: NodeConfig) -> Result<(), ConfigError> {
-        let mut validator_indices = Vec::new();
-        for _ in 0..node.validator_count {
-            validator_indices.push(self.validators.len());
+        let count = *node.count.get_ref();
 
-            let (private_key, public_key) = generate_keypair(0, NUM_ACTIVE_EPOCHS);
-
-            self.validators.push(ResolvedValidatorConfig {
-                private_key: private_key.to_bytes(),
-                public_key: public_key.to_bytes(),
-            });
+        if count == 0 {
+            return Err(ConfigError::InvalidCount(node.count.span()));
         }
 
         let (node_id, node_id_span) = node
@@ -250,91 +288,71 @@ impl ResolvedNetworkConfig {
                 )
             });
 
-        let resolved = ResolvedNodeConfig {
-            validators: validator_indices,
-        };
+        for _ in 0..count {
+            let mut validator_indices = Vec::new();
+            for _ in 0..node.validator_count {
+                validator_indices.push(self.validators.len());
 
-        if let Some(old) = self.nodes.insert(node_id, resolved) {}
+                // let (private_key, public_key) = generate_keypair(0, NUM_ACTIVE_EPOCHS);
+                let (private_key, public_key) = (Vec::new(), Vec::new());
+
+                self.validators.push(ResolvedValidatorConfig {
+                    private_key: private_key,
+                    public_key: public_key,
+                });
+            }
+
+            let (name, def) = if count == 1 {
+                (
+                    node_id.clone(),
+                    NodeNameDefinition::Singular(node_id_span.clone()),
+                )
+            } else {
+                let index = *self
+                    .counters
+                    .entry(node_id.clone())
+                    .and_modify(|v| *v += 1)
+                    .or_insert(0);
+                (
+                    format!("{}_{index}", node_id.clone()),
+                    NodeNameDefinition::Prefix {
+                        prefix: node_id.clone(),
+                        prefix_span: node_id_span.clone(),
+                        count_span: node.count.span(),
+                    },
+                )
+            };
+
+            let resolved = ResolvedNodeConfig {
+                def: def.clone(),
+                validators: validator_indices,
+            };
+
+            if let Some(old) = self.nodes.insert(name.clone(), resolved) {
+                return Err(ConfigError::DuplicateName {
+                    name,
+                    curr_def: def,
+                    prev_def: old.def,
+                });
+            }
+        }
 
         Ok(())
     }
 }
 
 impl NetworkConfig {
-    pub fn resolve(&self) -> Result<ResolvedNetworkConfig, ConfigError> {
-        let mut resolved = HashMap::new();
-        let mut by_prefix: HashMap<String, Vec<(NodeNameSource, NodeConfig)>> = HashMap::new();
+    pub fn resolve(self) -> Result<ResolvedNetworkConfig, ConfigError> {
+        let mut resolved = ResolvedNetworkConfig {
+            nodes: HashMap::new(),
+            validators: Vec::new(),
+            counters: HashMap::new(),
+        };
 
-        for node in self.node.iter() {
-            let (name, span) = node
-                .name
-                .as_ref()
-                .map(|v| (v.get_ref().clone(), NodeNameSource::Name(v.span())))
-                .unwrap_or_else(|| {
-                    (
-                        node.client.get_ref().kind().to_string(),
-                        NodeNameSource::Kind(node.client.span()),
-                    )
-                });
-
-            if *node.count.as_ref() == 0 {
-                return Err(ConfigError::InvalidCount(node.count.span()));
-            } else if *node.count.as_ref() == 1 {
-                if let Some((previous, _)) =
-                    resolved.insert(name.clone(), (span.clone(), ResolvedNodeConfig {}))
-                {
-                    return Err(ConfigError::DuplicateName {
-                        name: name,
-                        span: span.span(),
-                        previous: NodeNameDefinition::Singular(previous),
-                    });
-                };
-            } else {
-                by_prefix
-                    .entry(name)
-                    .and_modify(|v| v.push((span.clone(), node.clone())))
-                    .or_insert(vec![(span, node.clone())]);
-            }
+        for node in self.node.into_iter() {
+            resolved.resolve(node)?;
         }
 
-        let mut validators = Vec::new();
-
-        for (group_prefix, configs) in by_prefix {
-            let mut counter = 0;
-
-            for (prefix_span, config) in configs {
-                let count_span = config.count.span();
-                let count = config.count.into_inner();
-
-                debug_assert!(count > 1, "count must be greater than 1 at this point");
-
-                for _ in 0..count {
-                    let name = format!("{group_prefix}_{counter}");
-
-                    if let Some((duplicate, _)) = resolved.insert(
-                        name.clone(),
-                        (NodeNameSource::Kind(0..0), ResolvedNodeConfig {}),
-                    ) {
-                        return Err(ConfigError::DuplicateName {
-                            name,
-                            span: duplicate.span(),
-                            previous: NodeNameDefinition::Prefix {
-                                prefix: group_prefix,
-                                prefix_span,
-                                count_span,
-                            },
-                        });
-                    }
-                    counter += 1;
-                }
-            }
-        }
-
-        Ok(ResolvedNetworkConfig {
-            nodes: resolved
-                .into_iter()
-                .map(|(key, value)| (key, value.1))
-                .collect(),
-        })
+        Ok(resolved)
     }
 }
