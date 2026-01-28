@@ -3,7 +3,8 @@ name = "devnet1"
 [[node]]
 name = "ream"
 client = "ream"
-count = 0
+count = 2
 
 [[node]]
+name = "ream_2"
 client = { kind = "grandine", bin = "~/grandine" }

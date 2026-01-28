@@ -2,6 +2,7 @@ mod client;
 mod codespan;
 mod commands;
 mod config;
+mod validator;
 
 use clap::Parser;
 use color_eyre::Result;

@@ -1,9 +1,8 @@
-use std::{error::Error, path::PathBuf, process::exit};
+use std::path::PathBuf;
 
-use ariadne::Source;
 use clap::Args;
 use color_eyre::{Result, eyre::Context as _};
-use tokio::{fs::File, io::AsyncReadExt, process};
+use tokio::{fs::File, io::AsyncReadExt};
 
 use crate::{
     codespan::{report_config_error, report_toml_error},

@@ -9,6 +9,8 @@ bollard = { version = "0.20.0", features = ["buildkit", "chrono"] }
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 derive_more = { version = "2.1.1", features = ["display"] }
+leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "73bedc26ed961b110df7ac2e234dc11361a4bf25" }
+rand = "0.9.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_spanned = "1.0.4"
 serde_with = "3.16.1"
